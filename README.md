@@ -67,7 +67,7 @@ test.ho.st:  ok=3    changed=2    unreachable=0    failed=0
 Tuesday 12 September 2017  12:02:50 +0200 (0:00:01.344)       0:09:16.694 *****
 ===============================================================================
 Ansible copy (core module) -------------------------------------------- 554.35s
-Dircopy test (custom) --------------------------------------------------- 1.34s
+Dircopy test (custom module) -------------------------------------------- 1.34s
 setup ------------------------------------------------------------------- 0.94s
 ```
 (tasks' timing with [profile_tasks](https://github.com/jlafon/ansible-profile/blob/master/callback_plugins/profile_tasks.py))
