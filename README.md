@@ -6,7 +6,7 @@ The module intends to solve the old problem with the core copy module: you canno
 > The “copy” module recursively copy facility does not scale to lots (>hundreds) of files.
 
 Using synchronize instead maybe inconvenient in many
-#### Usage:
+#### Options:
 
 parameter |	required | default | choices | comments
 ---|---|---|---|---
