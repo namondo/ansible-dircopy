@@ -1,6 +1,6 @@
 # Ansible module:  _fast_ recursive copy
 
-Custom Ansible module for copy directory recursively
+It is custom Ansible module for copying directories recursively and fast.
 &nbsp;
 The module intends to solve the old problem with the core copy module: you cannot use it with lots of files. As the Ansible documentation states about the copy module:
 > The “copy” module recursively copy facility does not scale to lots (>hundreds) of files.
