@@ -72,8 +72,8 @@ setup ------------------------------------------------------------------- 0.94s
 ```
 (tasks' timing with [profile_tasks](https://github.com/jlafon/ansible-profile/blob/master/callback_plugins/profile_tasks.py))
 ##### Limitations:
-- not 'atomic'
 - won't work on windows
+- dircopy operation is not 'atomic'
 - not tested with SElinux
 - ...
 
