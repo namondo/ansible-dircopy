@@ -2,10 +2,10 @@
 
 It is custom Ansible module for copying directories recursively and fast.
 &nbsp;  
-The module intends to solve the old problem with the core copy module: you cannot use it with lots of files. As the Ansible documentation states about the copy module:
+The module intends to solve the old problem with the core copy module: it is ~~useless~~ useable (after some fixing introduced in 2.4) but still very slow with lots of files. As the Ansible documentation states about the copy module:
 > The “copy” module recursively copy facility does not scale to lots (>hundreds) of files.
 
-Using synchronize instead of it may be inconvenient in many cases.
+Using synchronize instead of it may be inconvenient in many cases. This module (at least) ten times faster than the 'official' copy.
 #### Options:
 
 parameter |	required | default | choices | comments
@@ -73,7 +73,6 @@ setup ------------------------------------------------------------------- 0.94s
 (tasks' timing with [profile_tasks](https://github.com/jlafon/ansible-profile/blob/master/callback_plugins/profile_tasks.py))
 ##### Limitations:
 - won't work on windows
-- dircopy operation is not 'atomic'
 - not tested with SElinux
 - ...
 
