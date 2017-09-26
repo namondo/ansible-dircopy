@@ -70,7 +70,7 @@ Ansible copy (core module) -------------------------------------------- 554.35s
 Dircopy test (custom module) -------------------------------------------- 1.34s
 setup ------------------------------------------------------------------- 0.94s
 ```
-(tasks' timing with [profile_tasks](https://github.com/jlafon/ansible-profile/blob/master/callback_plugins/profile_tasks.py))
+(tasks' runtime data with [profile_tasks](https://github.com/jlafon/ansible-profile/blob/master/callback_plugins/profile_tasks.py))
 ##### Limitations:
 - won't work on windows
 - not tested with SElinux
