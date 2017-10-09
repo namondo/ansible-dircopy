@@ -16,7 +16,7 @@ options:
   dest:
     description:
       - Directory on the destination host that will be synchronized from the source; 
-        The path can be absolute or relative.
+        The path should absolute. If dest doesn't exists it will be created.
     required: true
   mode:
     description: 
@@ -33,13 +33,18 @@ options:
   owner:
     description:
       - target ownership 
-    default: the value of the archive option
+    default: the Ansible user
     required: false
   group:
     description:
       - target group membership
+    default: the Ansible user's group
     required: false
-  chdir: 
+  gzip:
+    description:
+      - gzip the directory on transfer (applicable only on directory copying)
+    default: False
+  specialx: 
     description:
       - set execution flag additionally to owner or group rights (in case owner/group/others have any right on target) 
   verbose:
@@ -64,6 +69,8 @@ dircopy:
     src: /tmp/helloworld
     dest: /var/www/helloworld
     identical: yes
+    
+dircopy: src=/tmp/test.tgz dest=/tmp/test
 '''
 
 from ansible.module_utils.basic import *
@@ -71,25 +78,45 @@ import os
 import pwd
 import grp
 import subprocess
-from itertools import chain
 from operator import itemgetter
 
 
-def umask2mode(umask):
-    # TODO:
-    perms = [i.split("=")[1] for i in umask.split(",")]
-    perms = ["-" if not i else i for i in perms]
-    to_num = lambda x: x.replace("r", "4").replace("w", "2").replace("x", "1").replace("-", "0")
-    mode_num = lambda x: sum([int(i) for i in to_num(x)])
-    mode_string = "".join([str(mode_num(i)) for i in perms])
-    return mode_string
+class File(object):
+    def __init__(self, path):
+        path = os.path.abspath(path)
+        self.path = path if os.path.exists(path) else None
+        self.uid, self.gid, self.mode = self.get_rights()
+
+    def get_rights(self):
+        if self.path:
+            st = os.stat(self.path)
+            mode = str(oct(st.st_mode))[-4:] if self.path else None
+            return st.st_uid, st.st_gid, mode
+        else:
+            return None, None, None
+
+    def size(self):
+        return os.stat(self.path).st_size if self.path else None
+
+    def set_owner(self, uid, gid):
+        os.chown(self.path, uid, gid)
+
+    def set_mode(self, mode):
+        os.chmod(self.path, int(mode, 8))
+
+    def get_owner_name(self):
+        return pwd.getpwuid(os.stat(self.path).st_uid).pw_name
+
+    def get_group_name(self):
+        return grp.getgrgid(os.stat(self.path).st_gid).gr_name
 
 
 class TarFile(object):
-    def __init__(self, path, ansible_module):
+    def __init__(self, path, ansible_module, self_created=False):
         self.tarfile = path
         self.module = ansible_module
         self.check_mode = self.module.check_mode
+        self.self_created = self_created
 
     @staticmethod
     def _parse_tar_out(tar_out):
@@ -113,8 +140,11 @@ class TarFile(object):
         stdout = self._runner("tar -tvf %s" % self.tarfile)
         if stdout:
             lines = filter(None, [line for line in stdout.split("\n")])
-            dirs = [" ".join(line.split()[5:]) for line in lines if line.split()[0][:1] == "d"]
-            dirs = set(self._remove_leading_slash(dirs))
+            tar_listed_dirs = [" ".join(line.split()[5:]) for line in lines if line.split()[0][:1] == "d"]
+            # tar doesn't list directories contain no file, so
+            unlisted_dirs = [set(d.split("/")[:-1]) for d in tar_listed_dirs if "/" in d]
+            unlisted_dirs = set.union(*unlisted_dirs)
+            dirs = set.union(unlisted_dirs, set(tar_listed_dirs))
             paths = set(self._remove_leading_slash([" ".join(line.split()[5:]) for line in lines]))
             files = paths - dirs
             return files, dirs
@@ -149,70 +179,44 @@ class TarFile(object):
         return None
 
     def update(self, target, files2update):
+        files, dirs = self.list()
         if self.check_mode:
             return
-        files2update = self._add_leading_slash(list(files2update))
-        for d in files2update:
-            command = ['tar', '--extract', '--preserve-permissions', '--file', self.tarfile, '-C', target, d]
+        self._add_leading_slash(list(files2update))
+        for f in files2update:
+            command = ['tar', '-xf', self.tarfile, "-C", target, f]
             _ = self._runner(command)
 
 
-class File(object):
-    def __init__(self, path):
-        path = os.path.abspath(path)
-        self.path = path if os.path.exists(path) else None
-        self.uid, self.gid, self.mode = self.get_rights()
-
-    def get_rights(self):
-        if self.path:
-            st = os.stat(self.path)
-            mode = str(oct(st.st_mode))[-4:] if self.path else None
-            return st.st_uid, st.st_gid, mode
-        else:
-            return None, None, None
-
-    def set_owner(self, uid, gid):
-        os.chown(self.path, uid, gid)
-
-    def set_mode(self, mode):
-        os.chmod(self.path, int(mode, 8))
+def umask2mode(umask):
+    perms = [i.split("=")[1] for i in umask.split(",")]
+    perms = ["-" if not i else i for i in perms]
+    to_num = lambda x: x.replace("r", "4").replace("w", "2").replace("x", "1").replace("-", "0")
+    mode_num = lambda x: sum([int(i) for i in to_num(x)])
+    mode_string = "".join([str(mode_num(i)) for i in perms])
+    return mode_string
 
 
-def check_permissions(dest, uid, gid, perms, x4dirs, check_mode):
-    details = dict()
-    dir_perms = perms_with_exec(perms) if x4dirs else perms
+def check_permissions(dest, uid, gid, perms, dir_perms):
     dest_files, dest_dirs = get_files(dest)
     files = [File(os.path.abspath(f)) for f in dest_files]
     files = [f for f in files if f.path]
-    dirs = [File(d) for d in dest_dirs]
+    dirs = [File(os.path.abspath(d)) for d in dest_dirs]
     dirs = [d for d in dirs if d.path]
-    files_ownership_files2update = [f for f in files if (f.uid != uid)] + [f for f in files if (f.gid != gid)]
-    dirs_ownership_files2update = [d for d in dirs if (d.uid != uid or d.gid != gid)]
-    files_mode_files2update = [f for f in files if f.mode != perms]
-    dirs_mode_files2update = [d for d in files if d.mode != dir_perms]
-    if dirs_ownership_files2update or files_ownership_files2update:
-        details["ownership"] = set([f.path for f in files_ownership_files2update] +
-                                   [d.path for d in dirs_ownership_files2update])
-        if not check_mode:
-            [f.set_owner(uid, gid) for f in chain(dirs_ownership_files2update, files_ownership_files2update)]
-    else:
-        details["ownership"] = None
-    if files_mode_files2update or dirs_mode_files2update:
-        details["mode"] = set([f.path for f in files_mode_files2update] +
-                              [d.path for d in dirs_mode_files2update])
-        if not check_mode:
-            set([f.set_mode(perms) for f in files_mode_files2update])
-            set([d.set_mode(perms) for d in dirs_mode_files2update])
-    else:
-        details["mode"] = None
-    return details
+    files_ownership2update = set([f for f in files if (f.uid != uid)] + [f for f in files if (f.gid != gid)])
+    dirs_ownership2update = set([d for d in dirs if (d.uid != uid or d.gid != gid)])
+    ownership2update = list(files_ownership2update) + list(dirs_ownership2update)
+    files_mode2update = [f for f in files if f.mode != perms]
+    dirs_mode2update = [d for d in dirs if d.mode != dir_perms]
+    return ownership2update, files_mode2update, dirs_mode2update
 
 
 def get_files(target):
     files = set()
     dirs = list()
     for path, sub_dirs, _files in os.walk(target):
-        dirs.append(path)
+        if os.path.isdir(path):
+            dirs.append(path)
         for name in _files:
             files.add(os.path.abspath(os.path.join(path, name)))
     # Correct path endings
@@ -251,7 +255,7 @@ def remove_spares(files, dirs):
     for d in dirs_sorted_by_path:
         try:
             os.rmdir(d[0])
-        except OSError, e:
+        except OSError as e:
             return e
     return None
 
@@ -264,12 +268,12 @@ def main():
         "group": {"required": False},
         "mode": {"required": False},
         "identical": dict(default=False, aliases=['delete'], type='bool'),
-        # TODO:
-        # "backup": dict(default=False, type='bool'),
+        "_arch_root": dict(required=False),
         "verbose": dict(default=True, type='bool'),
         "remote_tmp": dict(default="/tmp"),
-        "chdir": dict(default=False, aliases=['x4dirs'], type='bool'),
-        "_tmpfile": {"required": False},
+        "specialx": dict(default=False, type='bool'),
+        "_tmpfile": dict(required=False),
+        "source_is_directory": dict(required=True),
     }
 
     module = AnsibleModule(argument_spec=argument_spec, supports_check_mode=True)
@@ -284,9 +288,9 @@ def main():
     group = params["group"]
     mode = params["mode"]
     identical = params["identical"]
-    # backup = params["backup"]
     verbose = params["verbose"]
-    x4dirs = params["chdir"]
+    specialx = params["specialx"]
+    source_is_directory = ["source_is_directory"]
     tmpdir = params["remote_tmp"]
     tmpfile = os.path.join(tmpdir, params["_tmpfile"])
 
@@ -318,83 +322,135 @@ def main():
     files2update = None
     removed = False
     msg = list()
+    updated = None
+    diff = {
+        'before': dict(updated=dict()),
+        'after': dict(updated=dict())
+    }
+    diff_updated_ownership_before = dict()
+    diff_updated_mode_before = dict()
 
     tarfile = TarFile(path=tmpfile, ansible_module=module)
 
+    exit_cmd = "module.exit_json(failed=failed, changed=changed, msg=dict(enumerate(msg)), diff=diff"
     if os.path.exists(dest):
-        exit_cmd = "module.exit_json(failed=failed, changed=changed, msg=dict(enumerate(msg))"
-        _msg = "differ(s)" if check_mode else "updated"
-        if os.path.isdir(dest):
+        _update_msg = "differ(s)" if check_mode else "updated"
+        if not os.path.isdir(dest):
+            failed = True
+            msg = "Destination (%s) is not a directory" % dest
+            eval(exit_cmd)
+        elif os.listdir(dest) != "":
             files2update = tarfile.compare(target=dest)
             if files2update:
                 changed = True
+                for f in files2update:
+                    file_object = File(path=os.path.join(dest, f))
+                    diff['before']['updated'][os.path.join(dest, f)] = file_object.size()
                 tarfile.update(target=dest, files2update=files2update)
-                msg.append("%s file(s) %s " % (len(files2update), _msg))
-                if verbose:
-                    files2update = [os.path.join(dest, d) for d in files2update]
-                    if check_mode:
-                        exit_cmd += ", files_to_update=list(files2update)"
-                    else:
-                        exit_cmd += ", updated_files=list(files2update)"
+                updated = set([os.path.join(dest, d) for d in files2update])
 
-        else:
-            module.fail_json(changed=False, result=False, msg="Destination (%s) is not a directory" % dest)
-        if identical:
+                for f in updated:
+                    file_object = File(path=f)
+                    diff_updated_ownership_before[f] = "{}/{}".format(file_object.get_owner_name(),
+                                                                      file_object.get_group_name())
+                    diff_updated_mode_before[f] = file_object.mode
+                    diff['after']['updated'][f] = file_object.size()
+                msg.append("%s file(s) %s " % (len(files2update), _update_msg))
+
+        if identical and os.listdir(dest) != "":
             spare_files, spare_dirs = make_identical(target=dest, tarfile=tarfile)
-            if spare_files or spare_dirs:
+            if (spare_files or spare_dirs) and not check_mode:
                 failed2remove = remove_spares(files=spare_files, dirs=spare_dirs)
                 if failed2remove:
                     module.exit_json(failed=True, changed=False, msg=str(failed2remove))
             removed = spare_files | spare_dirs
             if removed:
                 changed = True
-                _msg = "would be removed" if check_mode else "removed"
-                msg.append("%s file(s) and %s dir(s) %s" % (len(spare_files), len(spare_dirs), _msg))
-                if verbose:
+                _remove_msg = "would be removed" if check_mode else "removed"
+                msg.append("%s file(s) and %s dir(s) %s" % (len(spare_files), len(spare_dirs), _remove_msg))
+                if removed:
                     if check_mode:
-                        exit_cmd += ", would_be_removed=list(removed)"
+                        diff['before']['removed'] = removed
                     else:
-                        exit_cmd += ", removed=list(removed)"
+                        diff['before']['removed'] = removed
+                    diff['after']['would_be_removed'] = []
 
-        changes = check_permissions(dest=dest, uid=uid, gid=gid, perms=mode, x4dirs=x4dirs, check_mode=check_mode)
-        if changes['mode']:
+        dir_mode = perms_with_exec(mode) if specialx else mode
+        ownership2update, files_mode2update, dirs_mode2update = check_permissions(dest=dest, uid=uid, gid=gid,
+                                                                                  perms=mode, dir_perms=dir_mode)
+
+        if ownership2update:
             changed = True
-            if verbose:
-                permission_differ = changes['mode'] - set(files2update)
-                msg.append("%s file's mode(s) %s" % (len(permission_differ), _msg))
-                if check_mode:
-                    perms_msg = [f + " mode(s) differ." for f in permission_differ]
-                else:
-                    perms_msg = [f + " mode updated." for f in permission_differ]
+            ownership_before = dict()
+            ownership_after = dict()
+            for file_object in ownership2update:
+                ownership_before[file_object.path] = "{}/{}".\
+                    format(file_object.get_owner_name(), file_object.get_group_name())
+                ownership_after[file_object.path] = "{}/{}".format(pwd.getpwuid(uid).pw_name, grp.getgrgid(gid).gr_name)
+                if not check_mode:
+                    file_object.set_owner(uid, gid)
+            diff['before']['ownership'] = ownership_before
+            diff['after']['ownership'] = ownership_after
+            diff['before']['ownership'].update(diff_updated_ownership_before)
 
-                exit_cmd += ", mode=perms_msg"
-        if changes['ownership']:
+        diff['before']['mode'] = dict()
+        diff['after']['mode'] = dict()
+        mode_before = diff_updated_mode_before
+        mode_after = dict()
+        if files_mode2update:
             changed = True
-            if verbose:
-                ownership_differ = changes['ownership'] - set(files2update)
-                msg.append("%s permission(s) %s" % (len(ownership_differ), _msg))
-                if check_mode:
-                    owner_msg = [f + " ownership (owner/group) differ." for f in ownership_differ]
-                else:
-                    owner_msg = [f + " owner/group updated." for f in ownership_differ]
+            for file_object in files_mode2update:
+                mode_before[file_object.path] = file_object.mode
+                mode_after[file_object.path] = mode
+                if not check_mode:
+                    file_object.set_mode(mode)
+        if dirs_mode2update:
+            changed = True
+            for directory in dirs_mode2update:
+                mode_before[directory.path] = directory.mode
+                mode_after[directory.path] = dir_mode
+                if not check_mode:
+                    directory.set_mode(dir_mode)
+        if files_mode2update or dirs_mode2update:
+            diff['before']['mode'].update(mode_before)
+            diff['after']['mode'].update(mode_after)
 
-                exit_cmd += ", ownership=owner_msg"
         if not changed:
             msg = ["No update needed."]
+        elif verbose:
+            if diff['before']['mode']:
+                msg.append("%s file/dir mode(s) %s" % (len(files_mode2update) + len(dirs_mode2update), _update_msg))
+            if ownership2update:
+                msg.append("%s file/dir ownership %s" % (len(ownership2update), _update_msg))
+            if removed:
+                if check_mode:
+                    exit_cmd += ", would_be_removed=list(removed)"
+                else:
+                    exit_cmd += ", removed=list(removed)"
+            if updated:
+                if check_mode:
+                    exit_cmd += ", files_to_update=list(updated)"
+                else:
+                    exit_cmd += ", updated_files=list(updated)"
         exit_cmd += ")"
         eval(exit_cmd)
 
     # Target doesn't exist -> untar
-    os.mkdir(dest)
-    tarfile.untar(target=dest)
-    check_permissions(dest=dest, uid=uid, gid=gid, perms=mode, x4dirs=x4dirs, check_mode=check_mode)
-    changed = True
-    msg = "%s copied to %s " % (src, dest)
+    if not check_mode:
+        os.mkdir(dest)
+        tarfile.untar(target=dest)
+        check_permissions(dest=dest, uid=uid, gid=gid, perms=mode)
+        changed = True
+        _msg = "copied" if source_is_directory else "extracted"
+        msg = "%s %s to %s " % (src, _msg, dest)
+        updated = True
+        if verbose:
+            exit_cmd += ", 'extracted'=updated)"
+    else:
+        msg = "Target directory does not exists."
+    failed = False
 
-    updated = True
-    if verbose:
-        updated = files2update
-    module.exit_json(failed=False, changed=changed, msg=msg)
+    eval(exit_cmd)
 
 if __name__ == '__main__':
     main()
