@@ -6,17 +6,22 @@ The module intends to solve the old problem with the core copy module: it is ~~u
 > The “copy” module recursively copy facility does not scale to lots (>hundreds) of files.
 
 Using synchronize instead of it may be inconvenient in many cases. This module (at least) ten times faster than the 'official' copy.
+
+
+Additionally this module can handle tar archives; extract or update remote files/dirs from local tar archive.
+
 #### Options:
 
 parameter |	required | default | choices | comments
 ---|---|---|---|---
-chdir | no | no | yes/no | If `yes`,  set executable flags to the directories for all users have any right to the directories (eg. if mode=640, it will be 750 for directories) Alias: x4dirs.
 dest | yes | | |Remote absolute path where the file should be copied to. This must be a directory. If dest is a nonexistent path, dest is created. The parent directory of dest isn't created: the task fails if it doesn't already exist.
 group |	no | | | Name or GID of the group that should own the file/directory, as would be fed to chown.
+gzip |	no | no | yes/no | Compress data on transferring (applicable when src is a directory)
 idenctical | no | no | yes/no | If `yes`, it will delete all files and dirs which are not in the source. (Makes an 'identical' copy.) Alias: delete
 mode | no | | | Mode the file or directory should be. For those used to /usr/bin/chmod remember that modes are actually octal numbers (like 0644 or 740).
 owner |	no | | | Name or the UID of the user that should own the file/directory, as would be fed to chown.
-src | no | | | Local path to a directory to copy to the remote server; can be absolute or relative - it is copied recursively.
+specialx | no | no | yes/no | If `yes`,  set executable flags to the directories for all users have any right to the directories (eg. if mode=640, it will be 750 for directories)
+src | yes | | | Local path to a directory to copy to the remote server; can be absolute or relative - it is copied recursively.  If src is a tar archive its content will be copied.
 verbose | no | yes | yes/no | If `yes`, it provides detailed information about the differences between src and dest (running the module in verbose mode (-v))
 ###### Run-example:
 dircopy_test.yml:
@@ -75,4 +80,3 @@ setup ------------------------------------------------------------------- 0.94s
 - won't work on windows
 - not tested with SElinux
 - ...
-
