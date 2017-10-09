@@ -144,7 +144,10 @@ class TarFile(object):
             # tar doesn't list directories contain no file, so
             unlisted_dirs = [set(d.split("/")[:-1]) for d in tar_listed_dirs if "/" in d]
             unlisted_dirs = set.union(*unlisted_dirs)
-            dirs = set.union(unlisted_dirs, set(tar_listed_dirs))
+            if unlisted_dirs:
+                dirs = set.union(unlisted_dirs, set(tar_listed_dirs))
+            else:
+                unlisted_dirs = set([])
             paths = set(self._remove_leading_slash([" ".join(line.split()[5:]) for line in lines]))
             files = paths - dirs
             return files, dirs
